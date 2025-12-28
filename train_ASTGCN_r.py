@@ -14,24 +14,26 @@ from lib.utils import load_graphdata_channel1, get_adjacency_matrix, compute_val
 from tensorboardX import SummaryWriter
 from lib.metrics import masked_mape_np,  masked_mae,masked_mse,masked_rmse
 
-
+# 读取命令行参数
 parser = argparse.ArgumentParser()
 parser.add_argument("--config", default='configurations/METR_LA_astgcn.conf', type=str,
                     help="configuration file path")
 args = parser.parse_args()
+# 读取配置文件
 config = configparser.ConfigParser()
 print('Read configuration file: %s' % (args.config))
 config.read(args.config)
 data_config = config['Data']
 training_config = config['Training']
 
-adj_filename = data_config['adj_filename']
-graph_signal_matrix_filename = data_config['graph_signal_matrix_filename']
+adj_filename = data_config['adj_filename'] # 邻接矩阵文件
+graph_signal_matrix_filename = data_config['graph_signal_matrix_filename'] # 数据文件
+# 可选参数处理
 if config.has_option('Data', 'id_filename'):
     id_filename = data_config['id_filename']
 else:
     id_filename = None
-
+# 数据规格参数
 num_of_vertices = int(data_config['num_of_vertices'])
 points_per_hour = int(data_config['points_per_hour'])
 num_for_predict = int(data_config['num_for_predict'])
@@ -39,59 +41,63 @@ len_input = int(data_config['len_input'])
 dataset_name = data_config['dataset_name']
 
 model_name = training_config['model_name']
-
+#GPU/设备设置
 ctx = training_config['ctx']
 os.environ["CUDA_VISIBLE_DEVICES"] = ctx
 USE_CUDA = torch.cuda.is_available()
 DEVICE = torch.device('cuda:0')
 print("CUDA:", USE_CUDA, DEVICE)
-
+#训练参数
 learning_rate = float(training_config['learning_rate'])
 epochs = int(training_config['epochs'])
 start_epoch = int(training_config['start_epoch'])
 batch_size = int(training_config['batch_size'])
+# 时间窗口参数
 num_of_weeks = int(training_config['num_of_weeks'])
 num_of_days = int(training_config['num_of_days'])
 num_of_hours = int(training_config['num_of_hours'])
 time_strides = num_of_hours
-nb_chev_filter = int(training_config['nb_chev_filter'])
-nb_time_filter = int(training_config['nb_time_filter'])
-in_channels = int(training_config['in_channels'])
-nb_block = int(training_config['nb_block'])
-K = int(training_config['K'])
-loss_function = training_config['loss_function']
-metric_method = training_config['metric_method']
-missing_value = float(training_config['missing_value'])
-
+# 图卷积参数
+nb_chev_filter = int(training_config['nb_chev_filter']) # 切比雪夫滤波器数量
+nb_time_filter = int(training_config['nb_time_filter']) # 时间滤波器数量
+# 输入输出参数
+in_channels = int(training_config['in_channels']) # 输入通道数，如1
+nb_block = int(training_config['nb_block']) # 块数量，如2
+K = int(training_config['K']) # 切比雪夫多项式阶数，如3
+# 损失和评估
+loss_function = training_config['loss_function'] # 损失函数，如"masked_mae"
+metric_method = training_config['metric_method'] # 评估指标，如"masked_mae"
+missing_value = float(training_config['missing_value']) # 缺失值标记，如0.0
+#实验目录设置
 folder_dir = '%s_h%dd%dw%d_channel%d_%e' % (model_name, num_of_hours, num_of_days, num_of_weeks, in_channels, learning_rate)
 print('folder_dir:', folder_dir)
 params_path = os.path.join('experiments', dataset_name, folder_dir)
 print('params_path:', params_path)
 
-
+#数据加载
 train_loader, train_target_tensor, val_loader, val_target_tensor, test_loader, test_target_tensor, _mean, _std = load_graphdata_channel1(
     graph_signal_matrix_filename, num_of_hours,
     num_of_days, num_of_weeks, DEVICE, batch_size)
-
+#邻接矩阵加载
 adj_mx, distance_mx = get_adjacency_matrix(adj_filename, num_of_vertices, id_filename)
-
+#模型构建
 net = make_model(DEVICE, nb_block, in_channels, K, nb_chev_filter, nb_time_filter, time_strides, adj_mx,
                  num_for_predict, len_input, num_of_vertices)
 
-
+###深度学习模型训练的主函数，包含了完整的训练流程、模型保存、验证和测试。
 def train_main():
     if (start_epoch == 0) and (not os.path.exists(params_path)):
-        os.makedirs(params_path)
+        os.makedirs(params_path)   # 情况1：从头开始训练，目录不存在 → 创建目录
         print('create params directory %s' % (params_path))
     elif (start_epoch == 0) and (os.path.exists(params_path)):
-        shutil.rmtree(params_path)
+        shutil.rmtree(params_path)  # 情况2：从头开始训练，目录已存在 → 删除旧目录重新创建
         os.makedirs(params_path)
         print('delete the old one and create params directory %s' % (params_path))
     elif (start_epoch > 0) and (os.path.exists(params_path)):
-        print('train from params directory %s' % (params_path))
+        print('train from params directory %s' % (params_path)) # 情况3：从中间恢复训练，目录存在 → 直接使用
     else:
-        raise SystemExit('Wrong type of model!')
-
+        raise SystemExit('Wrong type of model!')  # 情况4：从中间恢复但目录不存在 → 错误
+#参数打印
     print('param list:')
     print('CUDA\t', DEVICE)
     print('in_channels\t', in_channels)
@@ -103,12 +109,14 @@ def train_main():
     print('graph_signal_matrix_filename\t', graph_signal_matrix_filename)
     print('start_epoch\t', start_epoch)
     print('epochs\t', epochs)
-    masked_flag=0
-    criterion = nn.L1Loss().to(DEVICE)
-    criterion_masked = masked_mae
+#损失函数设置
+    masked_flag=0 #是否使用masked损失函数，masked损失忽略这些缺失位置的计算
+    criterion = nn.L1Loss().to(DEVICE) # 默认L1损失
+    criterion_masked = masked_mae # masked MAE损失
+# 根据配置文件选择损失函数
     if loss_function=='masked_mse':
         criterion_masked = masked_mse         #nn.MSELoss().to(DEVICE)
-        masked_flag=1
+        masked_flag=1 # 设置masked标志
     elif loss_function=='masked_mae':
         criterion_masked = masked_mae
         masked_flag = 1
@@ -118,17 +126,19 @@ def train_main():
     elif loss_function == 'rmse':
         criterion = nn.MSELoss().to(DEVICE)
         masked_flag= 0
+#优化器设置
     optimizer = optim.Adam(net.parameters(), lr=learning_rate)
+#TensorBoard日志设置 作用：可视化训练过程
     sw = SummaryWriter(logdir=params_path, flush_secs=5)
     print(net)
-
+#模型参数统计
     print('Net\'s state_dict:')
     total_param = 0
     for param_tensor in net.state_dict():
         print(param_tensor, '\t', net.state_dict()[param_tensor].size())
         total_param += np.prod(net.state_dict()[param_tensor].size())
     print('Net\'s total params:', total_param)
-
+#优化器状态查看
     print('Optimizer\'s state_dict:')
     for var_name in optimizer.state_dict():
         print(var_name, '\t', optimizer.state_dict()[var_name])
@@ -138,7 +148,7 @@ def train_main():
     best_val_loss = np.inf
 
     start_time = time()
-
+#恢复训练检查点：支持从指定的spoch恢复训练
     if start_epoch > 0:
 
         params_filename = os.path.join(params_path, 'epoch_%s.params' % start_epoch)
@@ -148,57 +158,58 @@ def train_main():
         print('start epoch:', start_epoch)
 
         print('load weight from: ', params_filename)
-
+###主训练循环
     # train model
     for epoch in range(start_epoch, epochs):
 
         params_filename = os.path.join(params_path, 'epoch_%s.params' % epoch)
-
+        ## 验证阶段
         if masked_flag:
             val_loss = compute_val_loss_mstgcn(net, val_loader, criterion_masked, masked_flag,missing_value,sw, epoch)
         else:
             val_loss = compute_val_loss_mstgcn(net, val_loader, criterion, masked_flag, missing_value, sw, epoch)
 
-
+        # 保存最佳模型
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             best_epoch = epoch
             torch.save(net.state_dict(), params_filename)
             print('save parameters to file: %s' % params_filename)
 
-        net.train()  # ensure dropout layers are in train mode
+        # 训练阶段
+        net.train()  # 设置训练模式（启用dropout等）
 
         for batch_index, batch_data in enumerate(train_loader):
 
-            encoder_inputs, labels = batch_data
+            encoder_inputs, labels = batch_data #获取一个批次的数据
+            #encoder_inputs=(batch, nodes, features, time_steps)    labels=(batch, nodes, predict_steps)
+            optimizer.zero_grad() # 梯度清零
 
-            optimizer.zero_grad()
+            outputs = net(encoder_inputs)  # 前向传播
 
-            outputs = net(encoder_inputs)
-
+            # 计算损失
             if masked_flag:
                 loss = criterion_masked(outputs, labels,missing_value)
             else :
                 loss = criterion(outputs, labels)
 
 
-            loss.backward()
+            loss.backward()  # 反向传播
 
-            optimizer.step()
+            optimizer.step()  # 参数更新
 
+            # 记录训练损失
             training_loss = loss.item()
-
             global_step += 1
-
             sw.add_scalar('training_loss', training_loss, global_step)
 
+            # 定期打印训练进度
             if global_step % 1000 == 0:
 
                 print('global step: %s, training loss: %.2f, time: %.2fs' % (global_step, training_loss, time() - start_time))
 
     print('best epoch:', best_epoch)
-
-    # apply the best model on the test set
+    # 在测试集上评估最佳模型
     predict_main(best_epoch, test_loader, test_target_tensor,metric_method ,_mean, _std, 'test')
 
 

@@ -3,7 +3,7 @@ import numpy as np
 import argparse
 import configparser
 
-#找历史依赖数据的索引（总时间长度、需要多少个历史依赖、预测目标起点、预测步数、units、每小时采样点数）
+#找历史依赖数据的索引（总时间长度、需要多少个历史依赖(num_of_weeks、num_of_days、num_of_hours)、预测目标起点、预测步数、units（小时为单位）、每小时采样点数）
 def search_data(sequence_length, num_of_depend, label_start_idx,
                 num_for_predict, units, points_per_hour):
     '''
@@ -31,14 +31,14 @@ def search_data(sequence_length, num_of_depend, label_start_idx,
         start_idx = label_start_idx - points_per_hour * units * i
         end_idx = start_idx + num_for_predict
         if start_idx >= 0:
-            x_idx.append((start_idx, end_idx)) #返回[(start1,end1), (start2,end2), ...]
+            x_idx.append((start_idx, end_idx)) #返回[(start1,end1), (start2,end2), ...] #历史依赖数据分组
         else:
             return None
 
     if len(x_idx) != num_of_depend:
         return None
 
-    return x_idx[::-1]
+    return x_idx[::-1] #列表倒置
 
 #真正取数据【data_sequence（T,N,F）】
 def get_sample_indices(data_sequence, num_of_weeks, num_of_days, num_of_hours,
@@ -162,26 +162,31 @@ def read_and_generate_dataset(graph_signal_matrix_filename,
 
         all_samples.append(
             sample)  # sampe：[(week_sample),(day_sample),(hour_sample),target,time_sample] = [(1,N,F,Tw),(1,N,F,Td),(1,N,F,Th),(1,N,Tpre),(1,1)]
+                     #前几周同一时刻的数据、前几天同一时刻的数据、前几小时的连续数据、未来要预测的时间段数据
 
-    split_line1 = int(len(all_samples) * 0.6)
-    split_line2 = int(len(all_samples) * 0.8)
+    split_line1 = int(len(all_samples) * 0.6)  # 60%训练
+    split_line2 = int(len(all_samples) * 0.8)  # 20%验证，20%测试
 
-    training_set = [np.concatenate(i, axis=0)
-                    for i in zip(*all_samples[:split_line1])]  # [(B,N,F,Tw),(B,N,F,Td),(B,N,F,Th),(B,N,Tpre),(B,1)]
+    training_set = [np.concatenate(i, axis=0)  # 第1步：在批处理维度合并
+                    for i in zip(*all_samples[:split_line1])]  # [(B,N,F,Tw),(B,N,F,Td),(B,N,F,Th),(B,N,Tpre),(B,1)] 0~0.6
+    # *-> 解包
+    # zip()->  [week1, day1, hour1, target1, time1],  # 行1：样本1的所有部分      (week1, week2, week3),        # 列1：所有样本的周数据
+    #          [week2, day2, hour2, target2, time2],  # 行2：样本2的所有部分      (day1, day2, day3),           # 列2：所有样本的天数据
+    #                     ...                                                           ...
     validation_set = [np.concatenate(i, axis=0)
-                      for i in zip(*all_samples[split_line1: split_line2])]
+                      for i in zip(*all_samples[split_line1: split_line2])] #0.6~0.8
     testing_set = [np.concatenate(i, axis=0)
-                   for i in zip(*all_samples[split_line2:])]
+                   for i in zip(*all_samples[split_line2:])] #0.8~1
 
-    train_x = np.concatenate(training_set[:-2], axis=-1)  # (B,N,F,T')
+    train_x = np.concatenate(training_set[:-2], axis=-1)  # (B,N,F,T') training_set[:-2] 取前3个元素[week_data, day_data, hour_data]在最后一个维度(axis=-1)拼接
     val_x = np.concatenate(validation_set[:-2], axis=-1)
     test_x = np.concatenate(testing_set[:-2], axis=-1)
 
-    train_target = training_set[-2]  # (B,N,T)
+    train_target = training_set[-2]  # (B,N,T) -> 这是模型要预测的未来值
     val_target = validation_set[-2]
     test_target = testing_set[-2]
 
-    train_timestamp = training_set[-1]  # (B,1)
+    train_timestamp = training_set[-1]  # (B,1) 每个样本对应的原始时间点索引：时间戳是连接处理后的数据和原始时间信息的桥梁
     val_timestamp = validation_set[-1]
     test_timestamp = testing_set[-1]
 
